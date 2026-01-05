@@ -1,4 +1,5 @@
 import os
+import glob
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -24,7 +25,7 @@ st.markdown(f"""
             background-color: {ACCENT_COLOR} !important; 
         }}
         
-        /* FIX: Dropdown text visibility without breaking main charts */
+        /* FIX: Dropdown text visibility */
         section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
             background-color: #FFFFFF !important;
             color: #000000 !important;
@@ -45,31 +46,39 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # =====================================================
-# 2. DATA LOADERS
+# 2. DATA LOADERS (FIXED FOR GITHUB FILENAMES)
 # =====================================================
 
 @st.cache_data
 def load_historical_data():
-    paths = ["Predictive Analysis Commodity pricing.xlsx", "data/Predictive Analysis Commodity pricing.xlsx"]
-    f = next((p for p in paths if os.path.exists(p)), None)
-    if not f: return pd.DataFrame()
+    # Looks for any file starting with 'predictive' to solve the %20 space issue
+    possible_files = glob.glob("predictive*.xlsx") + glob.glob("data/predictive*.xlsx")
     
-    df = pd.read_excel(f)
-    df.columns = [str(c).strip() for c in df.columns]
+    if not possible_files:
+        return pd.DataFrame()
     
-    date_col = next((c for c in df.columns if any(k in c.lower() for k in ["date", "timestamp"])), None)
-    price_col = next((c for c in df.columns if any(k in c.lower() for k in ["price", "clean"])), None)
-    comm_col = next((c for c in df.columns if "commodity" in c.lower()), None)
+    # Use the first match found on the server
+    f = possible_files[0]
+    
+    try:
+        df = pd.read_excel(f)
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        date_col = next((c for c in df.columns if any(k in c.lower() for k in ["date", "timestamp"])), None)
+        price_col = next((c for c in df.columns if any(k in c.lower() for k in ["price", "clean"])), None)
+        comm_col = next((c for c in df.columns if "commodity" in c.lower()), None)
 
-    if date_col and price_col and comm_col:
-        df["ds"] = pd.to_datetime(df[date_col], errors="coerce")
-        df["price"] = pd.to_numeric(df[price_col], errors="coerce")
-        df["commodity"] = df[comm_col].astype(str).str.strip()
-        df = df.dropna(subset=["ds", "price", "commodity"])
-        df["year"] = df["ds"].dt.year
-        df["month_name"] = df["ds"].dt.month_name()
-        df["day"] = df["ds"].dt.day
-    return df
+        if date_col and price_col and comm_col:
+            df["ds"] = pd.to_datetime(df[date_col], errors="coerce")
+            df["price"] = pd.to_numeric(df[price_col], errors="coerce")
+            df["commodity"] = df[comm_col].astype(str).str.strip()
+            df = df.dropna(subset=["ds", "price", "commodity"])
+            df["year"] = df["ds"].dt.year
+            df["month_name"] = df["ds"].dt.month_name()
+            df["day"] = df["ds"].dt.day
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_data
 def load_live_excel_data():
@@ -98,9 +107,9 @@ def load_live_excel_data():
     return pd.DataFrame()
 
 # =====================================================
-# 3. INTERFACE EXECUTION (ORDER MATTERS)
+# 3. INTERFACE EXECUTION (FIXED ORDER)
 # =====================================================
-# Load data first to prevent NameError
+# Load data BEFORE creating sidebar widgets
 df_hist = load_historical_data()
 df_live = load_live_excel_data()
 
@@ -119,6 +128,9 @@ if not df_hist.empty:
     sel_hist_month = st.sidebar.selectbox("Select Month", months_list, index=datetime.now().month - 1)
     years_avail = sorted(df_hist["year"].unique())
     compare_years = st.sidebar.multiselect("Compare Years", years_avail, default=years_avail)
+else:
+    # Error message only appears if the glob search fails
+    st.sidebar.warning("Historical data file not found on server.")
 
 st.sidebar.markdown("---")
 
@@ -144,23 +156,10 @@ if not df_hist.empty:
                       color_discrete_map={"2024": PRIMARY_COLOR, "2025": ACCENT_COLOR},
                       labels={"day": "Day of Month", "price": "Price (₦)"})
         
-        # FIXED: Corrected 'titlefont' to 'title': {'font': ...}
         fig.update_layout(
-            plot_bgcolor="white", 
-            paper_bgcolor="white", 
-            font=dict(color="black"),
-            xaxis=dict(
-                tickfont=dict(color="black"), 
-                title=dict(text="Day of Month", font=dict(color="black")), 
-                showline=True, 
-                linecolor="black"
-            ),
-            yaxis=dict(
-                tickfont=dict(color="black"), 
-                title=dict(text="Price (₦)", font=dict(color="black")), 
-                showline=True, 
-                linecolor="black"
-            )
+            plot_bgcolor="white", paper_bgcolor="white", font=dict(color="black"),
+            xaxis=dict(tickfont=dict(color="black"), title=dict(text="Day of Month", font=dict(color="black")), showline=True, linecolor="black"),
+            yaxis=dict(tickfont=dict(color="black"), title=dict(text="Price (₦)", font=dict(color="black")), showline=True, linecolor="black")
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -180,6 +179,7 @@ if not df_live.empty:
         use_container_width=True,
         hide_index=True
     )
+
 
 
 
