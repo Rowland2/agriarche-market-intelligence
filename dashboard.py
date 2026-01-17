@@ -185,30 +185,33 @@ def load_historical_data():
 def load_live_excel_data():
     path = "data/clean_prices.xlsx"
     if os.path.exists(path):
-        ldf = pd.read_excel(path)
-        ldf.columns = [str(c).strip() for c in ldf.columns]
-        ldf = ldf.loc[:, ~ldf.columns.duplicated()]
-        
-        new_cols = {}
-        date_assigned = False
-        for col in ldf.columns:
-            low_col = col.lower()
-            if not date_assigned and any(k in low_col for k in ['date', 'scraped_at', 'time']):
-                new_cols[col] = 'Date'
-                date_assigned = True
-            elif 'price' in low_col: new_cols[col] = 'Price'
-            elif 'commodity' in low_col: new_cols[col] = 'Commodity'
-            elif 'location' in low_col or 'market' in low_col: new_cols[col] = 'Location'
-        
-        ldf = ldf.rename(columns=new_cols)
-        if 'Date' in ldf.columns:
-            ldf['Date'] = pd.to_datetime(ldf['Date'], errors='coerce')
-            ldf['Month'] = ldf['Date'].dt.month_name()
-        if 'Location' in ldf.columns:
-            ldf['Location'] = ldf['Location'].astype(str).str.strip()
-        if 'Price' in ldf.columns:
-            ldf['Price'] = pd.to_numeric(ldf['Price'], errors='coerce')
-        return ldf
+        try:
+            ldf = pd.read_excel(path)
+            ldf.columns = [str(c).strip() for c in ldf.columns]
+            ldf = ldf.loc[:, ~ldf.columns.duplicated()]
+            
+            new_cols = {}
+            date_assigned = False
+            for col in ldf.columns:
+                low_col = col.lower()
+                if not date_assigned and any(k in low_col for k in ['date', 'scraped_at', 'time']):
+                    new_cols[col] = 'Date'
+                    date_assigned = True
+                elif 'price' in low_col: new_cols[col] = 'Price'
+                elif 'commodity' in low_col: new_cols[col] = 'Commodity'
+                elif 'location' in low_col or 'market' in low_col: new_cols[col] = 'Location'
+            
+            ldf = ldf.rename(columns=new_cols)
+            if 'Date' in ldf.columns:
+                ldf['Date'] = pd.to_datetime(ldf['Date'], errors='coerce')
+                ldf['Month'] = ldf['Date'].dt.month_name()
+            if 'Location' in ldf.columns:
+                ldf['Location'] = ldf['Location'].astype(str).str.strip()
+            if 'Price' in ldf.columns:
+                ldf['Price'] = pd.to_numeric(ldf['Price'], errors='coerce')
+            return ldf
+        except:
+            return pd.DataFrame()
     return pd.DataFrame()
 
 # =====================================================
@@ -234,14 +237,32 @@ if not df_hist.empty:
     sel_hist_month = st.sidebar.selectbox("Select Month", months_list, index=0)
     years_avail = sorted(df_hist["year"].unique())
     compare_years = st.sidebar.multiselect("Compare Years", years_avail, default=years_avail)
+else:
+    # Fallback if historical data fails
+    sel_hist_month = "January"
+    sel_hist_comm = "None"
 
 st.sidebar.markdown("---")
 
+# SAFETY WRAPPER FOR LIVE FILTERS
 if not df_live.empty:
     st.sidebar.subheader("🌐 Live Market Controls")
-    sel_live_comm = st.sidebar.selectbox("Filter Live Commodity", ["All"] + sorted(df_live['Commodity'].unique().tolist()))
-    sel_live_market = st.sidebar.selectbox("Filter Live Market", ["All"] + sorted(df_live['Location'].unique().tolist()))
+    
+    live_comm_list = ["All"]
+    if 'Commodity' in df_live.columns:
+        live_comm_list += sorted(df_live['Commodity'].dropna().unique().tolist())
+    sel_live_comm = st.sidebar.selectbox("Filter Live Commodity", live_comm_list)
+
+    live_market_list = ["All"]
+    if 'Location' in df_live.columns:
+        live_market_list += sorted(df_live['Location'].dropna().unique().tolist())
+    sel_live_market = st.sidebar.selectbox("Filter Live Market", live_market_list)
+    
     sel_live_month = st.sidebar.selectbox("Filter Live Month", ["All"] + months_list)
+else:
+    sel_live_comm = "All"
+    sel_live_market = "All"
+    sel_live_month = "All"
 
 # --- TREND CHART SECTION ---
 if not df_hist.empty:
@@ -300,7 +321,7 @@ if not df_hist.empty:
 st.markdown("---")
 st.header(f"📋 Monthly Intelligence Report: {sel_hist_month}")
 
-report_data = df_hist[df_hist["month_name"] == sel_hist_month]
+report_data = df_hist[df_hist["month_name"] == sel_hist_month] if not df_hist.empty else pd.DataFrame()
 if not report_data.empty:
     pdf_buffer = generate_pdf_report(sel_hist_month, report_data)
     st.download_button(
@@ -421,7 +442,7 @@ if not report_data.empty:
         updatemenus=[dict(
             type="buttons",
             showactive=False,
-            visible=False, # This hides the Play/Pause buttons entirely
+            visible=False,
             buttons=[dict(
                 label="Play",
                 method="animate",
@@ -430,14 +451,12 @@ if not report_data.empty:
         )]
     )
 
-    # Attach the animation frames
     fig_gap.frames = [
         dict(data=[dict(y=[0] * len(plot_df))], name='start'),
         dict(data=[dict(y=plot_df['Price Gap (₦)'])], name='end')
     ]
 
-    # This line tells the chart to start at the 'start' frame and move to 'end' immediately
-    fig_gap.update_layout(sliders=[dict(visible=False)]) # Hides the slider bar
+    fig_gap.update_layout(sliders=[dict(visible=False)])
 
     st.plotly_chart(fig_gap, use_container_width=True)
 
@@ -452,6 +471,7 @@ if not report_data.empty:
     )
 else:
     st.warning("No data available to calculate price gaps.")
+
 # =====================================================
 # 7. LIVE DATA TABLE
 # =====================================================
@@ -461,8 +481,14 @@ if not df_live.empty:
     search_query = st.text_input("🔍 Search table (Filter by Date, Commodity, Market, or Source)", placeholder="Enter keyword...")
     display_df = df_live.copy()
     
-    if sel_live_comm != "All": display_df = display_df[display_df['Commodity'] == sel_live_comm]
-    if sel_live_market != "All": display_df = display_df[display_df['Location'] == sel_live_market]
+    if sel_live_comm != "All": 
+        if 'Commodity' in display_df.columns:
+            display_df = display_df[display_df['Commodity'] == sel_live_comm]
+    
+    if sel_live_market != "All": 
+        if 'Location' in display_df.columns:
+            display_df = display_df[display_df['Location'] == sel_live_market]
+            
     if sel_live_month != "All" and 'Month' in display_df.columns:
         display_df = display_df[display_df['Month'] == sel_live_month]
     
@@ -475,6 +501,9 @@ if not df_live.empty:
         use_container_width=True, 
         hide_index=True
     )
+else:
+    st.info("Live data table is currently empty or format is unrecognized.")
+
 
 
 
