@@ -472,6 +472,78 @@ if not report_data.empty:
 else:
     st.warning("No data available to calculate price gaps.")
 
+    # =====================================================
+# 8. MARKET & PRICE COMPARISON (UPDATED)
+# =====================================================
+st.markdown("---")
+st.header("⚖️ Market & Price Comparison")
+
+if not df_hist.empty:
+    # --- Enhanced Normalization ---
+    def normalize_commodity(name):
+        name = str(name).lower().strip()
+        # Mapping common variations
+        if "soy" in name: return "Soybeans"
+        if "maize" in name or "corn" in name: return "Maize"
+        if "paddy" in name: return "Rice Paddy"
+        if "cowpea" in name: return "Cowpea"
+        return name.capitalize()
+
+    # Apply normalization to both for background matching
+    df_hist["norm_comm"] = df_hist["commodity"].apply(normalize_commodity)
+    if not df_live.empty:
+        df_live["norm_comm"] = df_live["Commodity"].apply(normalize_commodity)
+
+    col_comp1, col_comp2 = st.columns(2)
+    
+    with col_comp1:
+        # 1. FIX: Use ALL historical commodities for the dropdown
+        all_hist_commodities = sorted(df_hist["norm_comm"].unique())
+        selected_comp_comm = st.selectbox("Select Commodity from History", all_hist_commodities)
+
+    with col_comp2:
+        # Filter markets for the selected commodity
+        hist_markets = sorted(df_hist[df_hist["norm_comm"] == selected_comp_comm]["Market"].unique())
+        sel_m_hist = st.selectbox("Select Historical Market", hist_markets)
+
+    # 2. MATCHING LOGIC
+    hist_val = df_hist[(df_hist["norm_comm"] == selected_comp_comm) & 
+                       (df_hist["Market"] == sel_m_hist)]["price"].mean()
+
+    # Check if this commodity exists in live data
+    live_match = pd.DataFrame()
+    if not df_live.empty:
+        live_match = df_live[df_live["norm_comm"] == selected_comp_comm]
+
+    if not live_match.empty:
+        live_markets = sorted(live_match["Location"].unique())
+        sel_m_live = st.selectbox("Select Real-Time Market to Compare", live_markets)
+        live_val = live_match[live_match["Location"] == sel_m_live]["Price"].mean()
+        
+        # Display Comparison Metrics
+        diff = live_val - hist_val
+        perc_change = (diff / hist_val) * 100
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric(f"Historical: {sel_m_hist}", f"₦{hist_val:,.0f}")
+        m2.metric(f"Real-Time: {sel_m_live}", f"₦{live_val:,.0f}", f"{perc_change:+.1f}%")
+        
+        # Chart
+        comp_chart_df = pd.DataFrame({
+            "Source": [f"Historical ({sel_m_hist})", f"Real-Time ({sel_m_live})"],
+            "Price": [hist_val, live_val]
+        })
+        fig_comp = px.bar(comp_chart_df, x="Source", y="Price", color="Source", 
+                           color_discrete_sequence=[ACCENT_COLOR, PRIMARY_COLOR], text_auto='.2s')
+        st.plotly_chart(fig_comp, use_container_width=True)
+    else:
+        # If no real-time match found
+        st.warning(f"No real-time price data found for '{selected_comp_comm}'. Showing historical value only.")
+        st.metric(f"Historical Average ({sel_m_hist})", f"₦{hist_val:,.0f}")
+
+else:
+    st.error("Historical data file is missing or empty.")
+
 # =====================================================
 # 7. LIVE DATA TABLE
 # =====================================================
@@ -503,6 +575,110 @@ if not df_live.empty:
     )
 else:
     st.info("Live data table is currently empty or format is unrecognized.")
+
+    # =====================================================
+# 9. DYNAMIC ASK ME ANYTHING (MARKET ASSISTANT)
+# =====================================================
+st.markdown("---")
+st.header("💬 Dynamic Market Assistant")
+
+# Initialize session state for the query if it doesn't exist
+if 'ama_query' not in st.session_state:
+    st.session_state.ama_query = ""
+
+def clear_ama():
+    st.session_state.ama_query = ""
+
+# Layout for input and clear button
+col_q, col_btn = st.columns([4, 1])
+with col_q:
+    user_query = st.text_input(
+        "Ask a question (e.g., 'Compare Soybeans in Biliri and Kumo')", 
+        key="ama_query",
+        placeholder="Type here..."
+    )
+with col_btn:
+    st.write(" ") # Padding
+    st.button("Clear Search", on_click=clear_ama)
+
+if user_query:
+    query = user_query.lower().strip()
+    
+    # Normalization helper for crops
+    def search_norm(text):
+        text = str(text).lower()
+        if "soy" in text: return "soybeans"
+        if "maize" in text or "corn" in text: return "maize"
+        if "cowpea" in text: return "cowpea"
+        return text
+
+    # Identify Commodity and Markets
+    all_comms = {c.lower(): c for c in df_hist["commodity"].unique()}
+    all_markets = {m.lower(): m for m in df_hist["Market"].unique()}
+    
+    # 1. FIXED: No longer defaults to sidebar. Must find crop in your text.
+    target_comm_key = next((k for k in all_comms.keys() if search_norm(k) in search_norm(query)), None)
+    
+    # 2. Detect ALL markets mentioned in the string
+    found_markets = [real_name for low_name, real_name in all_markets.items() if low_name in query]
+
+    if target_comm_key and found_markets:
+        real_comm_name = all_comms[target_comm_key]
+        
+        st.markdown(f"### ⚖️ Comparison Analysis: {real_comm_name}")
+        
+        # Filter data
+        compare_df = df_hist[(df_hist["commodity"] == real_comm_name) & 
+                             (df_hist["Market"].isin(found_markets))]
+        
+        if not compare_df.empty:
+            # Comparison Chart
+            fig_compare = px.line(
+                compare_df.sort_values("ds"), 
+                x="ds", y="price", color="Market", markers=True,
+                template="plotly_white",
+                title=f"Historical Price Comparison: {real_comm_name}"
+            )
+            st.plotly_chart(fig_compare, use_container_width=True)
+            
+            # Summary Metrics
+            cols = st.columns(len(found_markets))
+            for i, mkt in enumerate(found_markets):
+                avg_val = compare_df[compare_df["Market"] == mkt]["price"].mean()
+                cols[i].metric(f"Avg in {mkt}", f"₦{avg_val:,.0f}")
+                
+            # Styled Success Box (High Contrast)
+            st.markdown(f"""
+                <div style="background-color: #E8F5E9; padding: 15px; border-radius: 10px; border-left: 5px solid #2E7D32; margin-top: 20px;">
+                    <p style="color: #1B5E20; margin: 0; font-weight: bold; font-size: 16px;">
+                        ✅ Found {real_comm_name} data for: {', '.join(found_markets)}.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.warning(f"I found the names, but I don't have records for {real_comm_name} in those specific markets.")
+            
+    elif found_markets and not target_comm_key:
+        # User named markets but forgot the crop
+        st.markdown(f"""
+            <div style="background-color: #FFF3E0; padding: 15px; border-radius: 10px; border-left: 5px solid #EF6C00; margin-top: 20px;">
+                <p style="color: #E65100; margin: 0; font-size: 16px;">
+                    🤖 <b>Assistant:</b> I see you're asking about {', '.join(found_markets)}, but <b>which crop</b> do you want to compare? <br>
+                    Try: <i>"Compare <b>Soybeans</b> in {' and '.join(found_markets)}"</i>
+                </p>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        # General Help Box
+        st.markdown(f"""
+            <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #6c757d; margin-top: 20px;">
+                <p style="color: #31333F; margin: 0; font-size: 16px;">
+                    🤖 <b>Assistant:</b> I'm ready! Please mention a <b>Commodity</b> and at least one <b>Market</b>.<br>
+                    Example: <i>"What is the price of Soybeans in Biliri?"</i>
+                </p>
+            </div>
+        """, unsafe_allow_html=True)
+
 
 
 
